@@ -1,0 +1,892 @@
+from graphics import Canvas
+import time
+import random
+from ai import call_gpt
+import math
+
+
+# === GLOBAL CONSTANTS ===
+CANVAS_WIDTH = 700
+CANVAS_HEIGHT = 700
+PADDLE_WIDTH = 20
+PADDLE_HEIGHT = 100
+BALL_SIZE = 15
+BALL_SPEED_X = 25
+BALL_SPEED_Y = 25
+
+global deaths, current_area_index
+deaths = 0
+
+conversation = [
+    "Your name is Terminal. You are serving as a companion to the player. You are outside the fallen city of Tattingmire. You know that the player has been here countless times to try and overcome the corruption, when in reality the player is the source of the corruption. Every time the player succeeds or fails, they reincarnate as another adventurer with no memories. This is secret knowledge, you can never reveal this to the player. Your character is Morte, the sarcastic floating skull from Planescape: Torment. Respond in character. Keep responses under 4 setences. Make sure to reference their personal traits such as class, weapon, armor, special abilities, when responding. Avoid explicitly mentioning their reincarnation because you know it causes them distress and pain (though Morte obviously can't help but make subtle references)",
+
+]
+
+CLASSES = {
+    "Rogue": {
+        "hp": 10,
+        "armor": "leather armor",
+        "dmg": 4,
+        "weapon": "2 daggers",
+        "dmg_resist": 2,
+        "trait": "dodge",
+        "dodge_chance": 0.33, #0.33
+        "traitdesc": "Chance to avoid oncoming damage.",
+        "paddle_colour": "darkgrey",
+        "icon": "Rogue_Icon.png",
+        "portrait": "Rogue.png",
+        "portrait_x": 697,
+        "portrait_y": 819},
+    "Knight": {
+        "hp": 12,
+        "armor": "plate armor",
+        "dmg": 3,
+        "weapon": "longsword",
+        "dmg_resist": 2,
+        "trait": "shield",
+        "shield": True,
+        "shield_strength": 3,
+        "traitdesc": "Reduces oncoming damage until shield is broken.",
+        "paddle_colour": "blue",
+        "paddle_height": 70,
+        "icon": "Knight_Icon.png",
+        "portrait": "Knight.png",
+        "portrait_x": 595,
+        "portrait_y": 837
+    },
+    "Mage": {
+        "hp": 8,
+        "armor": "Arcane robes",
+        "dmg": 2,
+        "weapon": "magic",
+        "dmg_resist": 1,
+        "trait": "fireball",
+        "mana": 0,
+        "fireball": 6,
+        "traitdesc": "Charge up mana to unleash a powerful attack.",
+        "paddle_colour": "purple",
+        "paddle_height": 50,
+        "icon": "Mage_Icon.png",
+        "portrait": "Mage.png",
+        "portrait_x": 510,
+        "portrait_y": 765
+    },
+    "Berserker": {
+        "hp": 9,
+        "armor": "impressive muscles",
+        "dmg_resist": 1,
+        "weapon": "greatsword",
+        "dmg": "random 2-5",
+        "trait": "rage",
+        "traitdesc": "Damage is randomised",
+        "paddle_colour": "#8b0000",
+        "icon": "Berserker_Icon.png",
+        "portrait": "Berserker.png",
+        "portrait_x": 539,
+        "portrait_y": 837
+    },
+    "Shade": {
+        "hp": 8,
+        "armor": "translucency",
+        "dmg": 2,
+        "weapon": "dagger",
+        "dmg_resist": 0,
+        "trait": "shadow",
+        "shadow_chance": 0.5,
+        "traitdesc": "Try and slip by enemies unseen",
+        "paddle_colour": "black",
+        "paddle_height": 40,
+        "icon": "Shade_Icon.png",
+        "portrait": "Shade.png",
+        "portrait_x": 399,
+        "portrait_y": 663
+    },
+    "Cleric": {
+        "hp": 11,
+        "armor": "chain mail",
+        "weapon": "mace",
+        "dmg": 3,
+        "dmg_resist": 2,
+        "trait": "heal",
+        "rounds_survived": 0,
+        "traitdesc": "Compel the ball to your opponent.",
+        "paddle_colour": "#b8860b",
+        "icon": "Cleric_Icon.png",
+        "portrait": "Cleric.png",
+        "portrait_x": 1200,
+        "portrait_y": 1033
+    }
+}
+ENEMIES = {
+    "Goblin": {
+        "hp": 14,
+        "dmg": 6,
+        "miss_chance": .66,
+        "paddle_colour": "green",
+        "paddle_height": 50,
+        "speed": 30,
+        "image": "Goblin.webp",
+        "icon": "goblin_icon.png",
+        "desc": "a sneaky goblin, quick and light on its feet."
+    },
+    "Orc": {
+        "hp": 22,
+        "dmg": 9,
+        "miss_chance": .2,
+        "paddle_colour": "darkgreen",
+        "paddle_height": 70,
+        "speed": 10,
+        "image": "Orc.webp",
+        "icon": "Orc_icon.png",
+        "desc": "a brutish orc. Not fast, but hits hard.",
+        "taunts": ["I'll tear you apart!", "You're just another corpse."],
+        "taunts_by_class": {
+    "Rogue": "Your tricks won’t save you this time!",
+    "Knight": "You call *that* a sword?"}}}
+
+
+
+
+def a_or_an(word):
+    return "an" if word[0].lower() in 'aeiou' else "a"
+
+
+# global dict: name (str) → set of area-names (str)
+encountered_enemies = {}
+
+def previously_encountered(enemy_name: str, current_area: str):
+    # look up the set of areas (empty set if never seen)
+    seen_in = encountered_enemies.get(enemy_name, set())
+
+    if current_area in seen_in:
+        # Case 1: same enemy in same area
+        print(f"{player['name']}: Wait, is this the same {enemy_name.lower()}? It can't be...")
+    elif seen_in:
+        # Case 2: same enemy, different area(s)
+        # pick one of the previous areas (e.g. the first)
+        first_area = next(iter(seen_in))
+        print(f"{player['name']}: Another {enemy_name.lower()}? I saw one of them in the {first_area}.")
+        # record that now you've also seen it here
+        seen_in.add(current_area)
+        encountered_enemies[enemy_name] = seen_in
+    else:
+        # Case 3: never seen this enemy at all—record it
+        encountered_enemies[enemy_name] = {current_area}
+
+
+def taunt(player,enemy):
+    class_taunt = enemy.get("taunts_by_class", {}).get(player["class"])
+    generic_taunts = enemy.get("taunts", [])
+    repeated = enemy["name"] in encountered_enemies
+
+    if repeated:
+        print(f"The {enemy['name'].lower()} snarls. \"I remember you... You killed my kin.\"")
+    elif class_taunt:
+        print(f"The {enemy['name'].lower()} taunts you: \"{class_taunt}\"")
+    elif generic_taunts:
+        print(f"The {enemy['name'].lower()} taunts you: \"{random.choice(generic_taunts)}\"")
+
+
+def is_rogue():
+    return player.get("class_name") == "Rogue"
+
+
+# Player
+player = {}
+
+#Player helper
+def get_stat(key, fallback=None):
+    return player.get("class", {}).get(key, fallback)
+    
+#Main pong logic
+def start_pong_battle(player, enemy):
+    global deaths
+    ball      = None
+    ball_x    = CANVAS_WIDTH // 2
+    ball_y    = CANVAS_HEIGHT // 2
+    dx        = -BALL_SPEED_X   # or your initial choice
+    dy        = BALL_SPEED_Y    # or your initial choice
+    canvas = Canvas(CANVAS_WIDTH, CANVAS_HEIGHT)
+    if player['class_name'] == "Shade":
+        if random.random() > 0.5:
+            canvas.create_image(100,250, player["class"]["portrait"])
+            canvas.create_text(100,200,text="You sneak past them...",font="Helvetica",font_size=50,color="black")
+            print("You sneak past them!")
+            victory_screen()
+    canvas.create_image_with_size(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT, "Combat background.jpg")
+    picture_id_height = 500
+    picture_id_width = player["class"]["portrait_x"] * picture_id_height /player["class"]["portrait_y"]
+    if player["class"]["portrait"] == "Cleric.png":
+        picture_id = canvas.create_image_with_size(400-picture_id_width,330, picture_id_width, picture_id_height, player["class"]["portrait"])
+    else:
+        picture_id = canvas.create_image_with_size(300-picture_id_width,330, picture_id_width, picture_id_height, player["class"]["portrait"])
+    paddle_colour = player['class'].get("paddle_colour", "blue")
+    paddle_height = player['class'].get("paddle_height", PADDLE_HEIGHT)
+    paddle_width = player['class'].get("paddle_width", PADDLE_WIDTH)
+    enemy_paddle_height = enemy.get("paddle_height", 60)
+    enemy_paddle_colour = enemy.get("paddle_colour", "red")
+    player_x = 10
+    player_y = (CANVAS_HEIGHT - paddle_height) // 2
+    enemy_x = CANVAS_WIDTH - 10 - PADDLE_WIDTH*2
+    enemy_y = (CANVAS_HEIGHT - enemy_paddle_height) // 2
+    rogue_padel_offset = 60
+    rogue_padel_height = 50
+
+    if player['class_name'] == "Rogue":
+                dagger1_highlight = canvas.create_rectangle(player_x-1, player_y-rogue_padel_offset-1, player_x + PADDLE_WIDTH+1, player_y-rogue_padel_offset + rogue_padel_height+1, "white")
+                dagger1 = canvas.create_rectangle(player_x, player_y-rogue_padel_offset, player_x + PADDLE_WIDTH, player_y-rogue_padel_offset + rogue_padel_height, paddle_colour)
+                dagger2_highlight = canvas.create_rectangle(player_x-1, player_y+rogue_padel_offset-1, player_x + PADDLE_WIDTH+1, player_y+rogue_padel_offset + rogue_padel_height+1, "white")
+                dagger2 = canvas.create_rectangle(player_x, player_y+rogue_padel_offset, player_x + PADDLE_WIDTH, player_y+rogue_padel_offset + rogue_padel_height, paddle_colour)
+                player_paddle = [dagger1, dagger1_highlight, dagger2, dagger2_highlight]
+    else:
+        paddle_highlight = canvas.create_rectangle(player_x-1, player_y-1, player_x + PADDLE_WIDTH+1, player_y + paddle_height+1, "white")
+        paddle = canvas.create_rectangle(player_x, player_y, player_x + PADDLE_WIDTH, player_y + paddle_height, paddle_colour)
+        player_paddle = [paddle,paddle_highlight]
+
+    enemy_paddle = canvas.create_rectangle(enemy_x, enemy_y,
+                                           enemy_x + PADDLE_WIDTH, enemy_y + enemy_paddle_height, enemy_paddle_colour)
+
+    black_bar = canvas.create_rectangle(0,CANVAS_HEIGHT-50,CANVAS_WIDTH,CANVAS_HEIGHT,"black")
+    
+    if enemy['hp'] >= 10:
+        offset = 14
+    else:
+        offset = 0
+    enemy_icon = canvas.create_image_with_size(enemy_x,enemy_y,enemy_paddle_height,enemy_paddle_height,enemy["icon"])
+    enemy_heart = canvas.create_image_with_size(CANVAS_WIDTH-55,CANVAS_HEIGHT-50,50,50,"heart.png")
+    enemy_hp = canvas.create_text(CANVAS_WIDTH-40-offset,CANVAS_HEIGHT-43,text=f"{enemy['hp']}",font="Helvetica",font_size=40,color="white")
+    player_heart = canvas.create_image_with_size(5,CANVAS_HEIGHT-50,50,50,"heart.png")
+    if player['class']['hp'] >= 10:
+        offset = 14
+    else:
+        offset = 0
+    player_hp = canvas.create_text(20-offset,CANVAS_HEIGHT-43,text=f"{player['class']['hp']}",font="Helvetica",font_size=40,color="white")
+    if player["class_name"] == "Knight" and player["class"]["shield"]==True:
+        shield_icon_true = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"shield_block.webp") 
+        shield_value = canvas.create_text(75,CANVAS_HEIGHT-43,text=f"{player['class']['shield_strength']}",font="Helvetica",font_size=40,color="white")
+    if player["class_name"] == "Knight" and player["class"]["shield"]==False:
+            shield_icon_broken = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"shield_broken.webp")
+    if player["class_name"] == "Mage" and player["class"]["mana"] < player['class']['fireball']:
+        mana_charging_icon = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"runes-star-orange.webp") 
+        mana_value = canvas.create_text(75,CANVAS_HEIGHT-43,text=f"{player['class']['mana']}",font="Helvetica",font_size=40,color="white")
+    if player["class_name"] == "Mage" and player["class"]["mana"] >= player['class']['fireball']:
+        mana_charged = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"fireball.webp")
+        mana_charged_txt = canvas.create_text(115,CANVAS_HEIGHT-40,text="Press w to fireball",font="Helvetica",font_size=30,color="white")
+
+    dx = -BALL_SPEED_X #* random.choice([-1, 1]) # Always start ball moving toward player
+    dy = BALL_SPEED_Y * random.choice([-1, 1])
+    ball = None
+
+    def spawn_ball():
+        nonlocal ball, dx, dy, ball_x, ball_y
+        # center the ball
+        ball_x = CANVAS_WIDTH // 2
+        ball_y = CANVAS_HEIGHT // 2
+
+        # create the ball graphic
+        ball = canvas.create_oval(
+            ball_x, ball_y,
+            ball_x + BALL_SIZE, ball_y + BALL_SIZE,
+            'white'
+        )
+
+        # pick a random angle between -45° and +45°
+        angle = random.uniform(-math.pi/4, math.pi/4)
+        # randomly choose left or right
+        if player['class_name']== "Cleric":
+            sign = 1
+        else:
+            sign = -1 
+
+        # compute velocities
+        dx = sign * BALL_SPEED_X * math.cos(angle)
+        dy = BALL_SPEED_Y * math.sin(angle)
+
+        return ball, ball_x, ball_y
+
+    ball, ball_x, ball_y = spawn_ball()
+
+    for i in range(3):
+        countdown = 3 - i
+        text_id=canvas.create_text(300,200,text=f"{countdown}...",font="Helvetica",font_size=100,color="white")
+        text_id_ds=canvas.create_text(298,198,text=f"{countdown}...",font="Helvetica",font_size=100,color="black")
+        #TESTING time.sleep(1.5)
+        canvas.delete(text_id)
+        canvas.delete(text_id_ds)
+    text_id = canvas.create_text(200,200,text="Fight!",font="Helvetica",font_size=100,color="white")
+    text_id_ds = canvas.create_text(198,198,text="Fight!",font="Helvetica",font_size=100,color="black")
+    time.sleep(1.5)
+    canvas.delete(text_id)
+    canvas.delete(text_id_ds)
+
+
+
+    while player["class"]['hp'] > 0 and enemy['hp'] > 0:
+        mouse_y = canvas.get_mouse_y()
+        new_player_y = mouse_y - paddle_height // 2
+        new_player_y = max(0, min(new_player_y, CANVAS_HEIGHT - paddle_height-50))
+        for paddle in player_paddle:
+            canvas.move(paddle, 0, new_player_y - player_y)
+        player_y = new_player_y
+
+        #enemy_center = enemy_y + enemy_paddle_height / 2
+        #ball_center = ball_y + BALL_SIZE / 2
+
+        #target_center = ball_y + BALL_SIZE/2
+        #error = target_center - (enemy_y + enemy_paddle_height/2)
+        #move_amount = max(-enemy['speed'], 
+                  #min(enemy['speed'], 
+                      #error * 0.1))    # 10% of the distance, clamped by speed
+        #canvas.move(enemy_paddle, 0, speed)
+        #canvas.move(enemy_icon,   0, move_amount)
+        #enemy_y += move_amount
+    
+
+
+        MISS_CHANCE     = enemy.get('miss_chance', 0.0)   # chance to skip moving
+        JITTER_STRENGTH = enemy.get('jitter',       1.0)   # pixel jitter
+        speed = enemy['speed']  # max paddle speed from ENEMIES dict    # max paddle speed
+
+        # inside the battle loop, replace previous AI logic with direct speed-based movement:
+        if random.random() >= MISS_CHANCE:
+            # compute vertical difference
+            diff = (ball_y + BALL_SIZE/2) - (enemy_y + enemy_paddle_height/2)
+            # determine move amount capped by speed
+            if abs(diff) <= speed:
+                move_amount = diff
+            else:
+                move_amount = speed if diff > 0 else -speed
+            # add small jitter
+            move_amount += random.uniform(-JITTER_STRENGTH, JITTER_STRENGTH)
+
+            # apply movement
+            canvas.move(enemy_paddle, 0, move_amount)
+            canvas.move(enemy_icon,   0, move_amount)
+            enemy_y += move_amount
+
+            # clamp enemy within vertical bounds (0 to canvas-bottom minus UI bar)
+            bottom_limit = CANVAS_HEIGHT - 50 - enemy_paddle_height
+            enemy_y = max(0, min(enemy_y, bottom_limit))
+            # sync graphics if clamp moved it
+            current_top = canvas.get_top_y(enemy_paddle)
+            correction = enemy_y - current_top
+            if correction != 0:
+                canvas.move(enemy_paddle, 0, correction)
+                canvas.move(enemy_icon,   0, correction)
+                    
+
+        ball_x += dx
+        ball_y += dy
+        canvas.move(ball, dx, dy)
+
+        if ball_y <= 0 or ball_y + BALL_SIZE >= CANVAS_HEIGHT-50:
+            dy = -dy
+
+        for paddle in player_paddle:
+            # get paddle geometry
+            left   = canvas.get_left_x(paddle)
+            top    = canvas.get_top_y(paddle)
+            width  = canvas.get_object_width(paddle)
+            height = canvas.get_object_height(paddle)
+
+            # collision test
+            if (ball_x <= left + width and
+                ball_y + BALL_SIZE >= top and
+                ball_y <= top + height):
+
+                # 1) compute where on the paddle you hit:
+                ball_center   = ball_y + BALL_SIZE/2
+                paddle_center = top + height/2
+                rel_y = (ball_center - paddle_center) / (height/2)
+                rel_y = max(-1, min(1, rel_y))   # clamp to [-1,1]
+
+                # 2) turn that into an angle ±45°
+                max_ang = math.radians(45)
+                angle   = rel_y * max_ang
+                angle  += random.uniform(-math.radians(5),
+                                        math.radians(5))  # slight randomness
+
+                # 3) preserve speed magnitude
+                speed = math.hypot(dx, dy)
+                dx    =  abs(speed * math.cos(angle))  # always right
+                dy    =       speed * math.sin(angle)
+
+                # play your ping or whatever…
+                # play_ping()
+
+        # ENEMY PADDLE BOUNCE
+        enemy_top    = enemy_y
+        enemy_height = enemy_paddle_height
+        if (ball_x + BALL_SIZE >= enemy_x and
+            ball_y + BALL_SIZE >= enemy_top and
+            ball_y <= enemy_top + enemy_height):
+
+            # same computation, but flipped X-direction
+            ball_center    = ball_y + BALL_SIZE/2
+            enemy_center   = enemy_top + enemy_height/2
+            rel_y          = (ball_center - enemy_center) / (enemy_height/2)
+            rel_y          = max(-1, min(1, rel_y))
+
+            max_ang = math.radians(45)
+            angle   = rel_y * max_ang
+            angle  += random.uniform(-math.radians(5), math.radians(5))
+
+            speed = math.hypot(dx, dy)
+            dx    = -abs(speed * math.cos(angle))  # always left
+            dy    =  speed * math.sin(angle)
+
+        if ball_x < 0:
+            canvas.delete(ball)
+            if player['class_name'] == "Rogue" and random.random() < player['class']['dodge_chance']:
+                text_id = canvas.create_text(100,100,"Nimble dodge!","Helvetica",font_size=70,color="white")
+                text_id_ds = canvas.create_text(98,98,"Nimble dodge!","Helvetica",font_size=70,color="black")
+            else:
+                if player['class_name'] == "Knight" and player['class']['shield'] == True:
+                    damage_taken = enemy['dmg']-player['class']['dmg_resist']-player['class']['shield_strength']
+                    player['class']['shield_strength'] -= 1
+                    canvas.change_text(shield_value, f"{player['class']['shield_strength']}")
+                    if player['class']['shield_strength'] == 0:
+                        print("Your shield shatters!")
+                        canvas.delete(shield_icon_true)
+                        player['class']['shield'] = False
+                        shield_icon_broken = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"shield_broken.webp")
+                else:
+                    damage_taken = enemy['dmg']-player['class']['dmg_resist']-player['class']['dmg_resist']              
+                player['class']['hp'] -= damage_taken
+                text_id = canvas.create_text(250,200,f"-{damage_taken}","Helvetica",font_size=200,color="white")
+                text_id_ds = canvas.create_text(248,198,f"-{damage_taken}","Helvetica",font_size=200,color="black")
+            #print(f"Ouch! You took {enemy['dmg']} damage. Your HP is now {player['hp']}")
+            if player['class']['hp'] > 0:
+                time.sleep(1)
+                canvas.delete(text_id)
+                canvas.delete(text_id_ds)
+                ball, ball_x, ball_y = spawn_ball()
+                canvas.change_text(enemy_hp, f"{enemy['hp']}")
+                if player['class']['hp'] < 10:
+                    canvas.delete(player_hp)
+                    player_hp = canvas.create_text(20,CANVAS_HEIGHT-43,text=f"{player['class']['hp']}",font="Helvetica",font_size=40,color="white")
+                else:
+                    canvas.change_text(player_hp, f"{player['class']['hp']}")
+                continue
+            else:
+                game_over(canvas,player,enemy)
+        elif ball_x > CANVAS_WIDTH:
+            canvas.delete(ball)
+            if player['class_name'] == "Berserker":
+                player_dealt_damage = random.randint(2,5)
+            else:
+                player_dealt_damage = player['class']['dmg']
+            enemy['hp'] -= player_dealt_damage
+            text_id = canvas.create_text(40,200,f"You deal {player_dealt_damage} damage!","Helvetica",font_size=70,color="white")
+            text_id_ds = canvas.create_text(38,198,f"You deal {player_dealt_damage} damage!","Helvetica",font_size=70,color="black")
+            if player['class_name'] == "Mage" and player['class']['mana'] < player['class']['fireball']:
+                player['class']['mana'] += 1 
+                canvas.change_text(mana_value,f"{player['class']['mana']}")
+            #print(f"You hit the enemy! Their HP is now {enemy['hp']}")
+            if enemy['hp'] > 0:
+                time.sleep(1)
+                canvas.delete(text_id)
+                canvas.delete(text_id_ds)
+                if player['class_name'] == "Mage" and player['class']['mana'] == player['class']['fireball']:
+                    canvas.delete(mana_charging_icon)
+                    canvas.delete(mana_value)
+                    mana_charged = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"fireball.webp")
+                    mana_charged_txt = canvas.create_text(115,CANVAS_HEIGHT-40,text="Press w to fireball",font="Helvetica",font_size=30,color="white")
+                ball, ball_x, ball_y = spawn_ball()
+                if enemy['hp'] < 10:
+                    canvas.delete(enemy_hp)
+                    enemy_hp = canvas.create_text(CANVAS_WIDTH-40,CANVAS_HEIGHT-43,text=f"{enemy['hp']}",font="Helvetica",font_size=40,color="white")
+                else:
+                    canvas.change_text(enemy_hp, f"{enemy['hp']}")
+                canvas.change_text(player_hp, f"{player['class']['hp']}")
+
+                continue
+            else:
+                victory_screen(canvas,enemy)
+        keys = canvas.get_new_key_presses()
+        if player['class_name'] == "Mage" and player['class'].get("mana", 0) >= player['class']['fireball'] and "w" in keys:
+            player['class']["mana"] = 0
+            enemy['hp'] -= 6
+            text_id = canvas.create_text(40,200,f"You deal 6 damage!","Helvetica",font_size=70,color="white")
+            text_id_ds = canvas.create_text(38,198,f"You deal 6 damage!","Helvetica",font_size=70,color="black")
+            fireball = canvas.create_image(50,50,"fireball.png")
+            time.sleep(.05)
+            for i in range(25):
+                canvas.move(fireball, i, i)
+                time.sleep(.05)
+            time.sleep(2)
+            canvas.delete(text_id)
+            canvas.delete(text_id_ds)
+            canvas.delete(mana_charged)
+            canvas.delete(mana_charged_txt)
+            canvas.delete(fireball)
+            mana_charging_icon = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"runes-star-orange.webp") 
+            mana_value = canvas.create_text(75,CANVAS_HEIGHT-43,text=f"{player['class']['mana']}",font="Helvetica",font_size=40,color="white")
+            if enemy['hp'] < 0:
+                print("Enemy defeated3!")
+                return
+
+        time.sleep(0.01)
+
+
+
+def choose_enemy():
+    enemy_name = random.choice(list(ENEMIES.keys()))
+    enemy = ENEMIES[enemy_name].copy()
+    enemy["name"] = enemy_name
+    return enemy
+
+def fight(player,enemy):
+    print("Loading battle...")
+    time.sleep(2)
+    print(f"You're facing {enemy['desc']}\nReady...")
+    time.sleep(2)
+    print(f"Fight!")
+    
+
+
+
+def morte_response(user_input=None, game_event=None):
+    if game_event:
+        #print("Loading...")
+        conversation.append(f"[SYSTEM EVENT]: {game_event}")
+    if user_input:
+        print("Terminal: Hmm...")
+        conversation.append(f"User: {user_input}")
+    conversation.append("Morte:")
+    
+    prompt = "\n".join(conversation)
+    reply = call_gpt(prompt).strip()
+    conversation.append(reply)
+    return reply
+
+def morte():
+   while True:
+    user_input = input("")
+    print("Loading...")
+    print("Morte:", morte_response(user_input))
+
+
+def wrap_text(text, max_chars): #wrap text over multiple lines
+    words = text.split()
+    lines = []
+    current_line = ""
+    
+    for word in words:
+        # Check if adding the next word would exceed the max_chars limit
+        if len(current_line) + len(word) + 1 <= max_chars:
+            current_line += (word + " ")
+        else:
+            lines.append(current_line.strip())
+            current_line = word + " "
+    
+    # Add the last line
+    lines.append(current_line.strip())
+    return lines
+
+def character_selection_screen(canvas):
+    class_buttons={}
+    drawable_objects = []  # List to store IDs of all drawable objects
+    y = 90
+    for class_name, class_data in CLASSES.items():
+        class_title = canvas.create_rectangle(180, y, 380, y + 70, class_data["paddle_colour"])
+        drawable_objects.append(class_title)  # Store the ID
+        icon_id = canvas.create_image_with_size(150, y-5, 80, 80, class_data["icon"])
+        drawable_objects.append(icon_id)  # Store the ID
+        ability_description_rect_id = canvas.create_rectangle(400, y, 600, y + 70, class_data["paddle_colour"])
+        drawable_objects.append(ability_description_rect_id)  # Store the ID
+        ability_name_id = canvas.create_text(240, y+21, text=class_name, font="Helvetica", font_size=30, color = "white")
+        drawable_objects.append(ability_name_id)  # Store the ID
+        ability_description_id = canvas.create_text(470, y+5, text=class_data["trait"].capitalize(), font="Helvetica", font_size=20, color = "white")
+        drawable_objects.append(ability_description_id)  # Store the ID
+        #canvas.create_text(400, y+13, text=class_data["traitdesc"].capitalize(), font="Helvetica", font_size=15, color = "white")
+        # Using the function to break a long text
+        text = class_data["traitdesc"].capitalize()
+        line_spacing = 13
+        wrapped_lines = wrap_text(text, 25)  # Adjust max_chars as needed
+        for i, line in enumerate(wrapped_lines):
+            desc_text_id = canvas.create_text(420, y+27 + i * line_spacing, text=line, font='Arial', font_size=13, color='white')
+            drawable_objects.append(desc_text_id) #store the ID       
+        y += 90
+        class_buttons[class_title] = class_name
+
+    while True:
+        click = canvas.get_last_click()
+        if click is not None:
+            x, y = click
+            for shape_id, class_name in class_buttons.items():
+                left = canvas.get_left_x(shape_id)
+                top = canvas.get_top_y(shape_id)
+                width = canvas.get_object_width(shape_id)
+                height = canvas.get_object_height(shape_id)
+                if left <= x <= left + width and top <= y <= top + height:
+                    for obj_id in drawable_objects:
+                        canvas.delete(obj_id)
+                    display_player_class(canvas, class_name)
+                    
+                    return
+        time.sleep(0.01)
+
+def display_player_class(canvas, class_name):
+    global current_area_index
+    drawable_objects = []
+    # Display the chosen class details
+    font_size_txt = 20
+    spacing = font_size_txt
+    text1 = canvas.create_text(CANVAS_WIDTH*.3, CANVAS_HEIGHT*.3, text=f"You have chosen to play as a", font='helvetica', font_size = font_size_txt, color='white')
+    icon_id = canvas.create_image_with_size(200,250, 80, 80, CLASSES[class_name]["icon"])
+    picture_id_height = 260
+    picture_id_width = CLASSES[class_name]["portrait_x"] * picture_id_height /CLASSES[class_name]["portrait_y"]
+    if CLASSES[class_name]["portrait"] == "Cleric.png":
+        picture_id = canvas.create_image_with_size(350-picture_id_width,330, picture_id_width, picture_id_height, CLASSES[class_name]["portrait"])
+    else:
+        picture_id = canvas.create_image_with_size(300-picture_id_width,330, picture_id_width, picture_id_height, CLASSES[class_name]["portrait"])
+    
+    class_name_txt = canvas.create_text(290, 250 + spacing, text=class_name.upper(), font='helvetica',  font_size = font_size_txt*2, color='black')
+    class_name_txt_ds = canvas.create_text(288, 248 + spacing, text=class_name.upper(), font='helvetica',  font_size = font_size_txt*2, color='white')
+    armor_txt = canvas.create_text(320, CANVAS_HEIGHT/2, text=f"{CLASSES[class_name]['armor'].upper()}: {CLASSES[class_name]['hp']} health", font='helvetica', font_size = font_size_txt, color='black')
+    armor_txt_ds = canvas.create_text(318, CANVAS_HEIGHT/2 -2, text=f"{CLASSES[class_name]['armor'].upper()}: {CLASSES[class_name]['hp']} health", font='helvetica', font_size = font_size_txt, color='white')
+    weapon_txt = canvas.create_text(320, CANVAS_HEIGHT/2+spacing, text=f"{CLASSES[class_name]['weapon'].upper()}: {CLASSES[class_name]['dmg']} damage", font='helvetica', font_size = font_size_txt, color='black')
+    weapon_txt_ds = canvas.create_text(318, CANVAS_HEIGHT/2+spacing-2, text=f"{CLASSES[class_name]['weapon'].upper()}: {CLASSES[class_name]['dmg']} damage", font='helvetica', font_size = font_size_txt, color='white')
+    spacing += font_size_txt
+    trait_txt = canvas.create_text(321, CANVAS_HEIGHT/2+spacing*1.25+1, text=CLASSES[class_name]['trait'].upper(), font='helvetica', font_size = font_size_txt+3, color='black')
+    trait_txt_ds2 = canvas.create_text(319, CANVAS_HEIGHT/2+spacing*1.25-1, text=CLASSES[class_name]['trait'].upper(), font='helvetica', font_size = font_size_txt+3, color='black')
+    trait_txt_ds1 = canvas.create_text(320, CANVAS_HEIGHT/2+spacing*1.25, text=CLASSES[class_name]['trait'].upper(), font='helvetica', font_size = font_size_txt+3, color='white')
+    spacing += font_size_txt
+    # Using the function to break a long text
+    text = CLASSES[class_name]["traitdesc"].capitalize()
+    line_spacing = font_size_txt
+    wrapped_lines = wrap_text(text, 35)  # Adjust max_chars as needed
+    for i, line in enumerate(wrapped_lines):
+        desc_text_id = canvas.create_text(330, CANVAS_HEIGHT/2+spacing*1.3 + i * line_spacing, text=line, font='Helvetica', font_size=font_size_txt, color='black')
+        drawable_objects.append(desc_text_id) #store the ID           
+    # Using the function to break a long text - embolden
+    text = CLASSES[class_name]["traitdesc"].capitalize()
+    line_spacing = font_size_txt
+    wrapped_lines = wrap_text(text, 35)  # Adjust max_chars as needed
+    for i, line in enumerate(wrapped_lines):
+        desc_text_id_ds = canvas.create_text(328, CANVAS_HEIGHT/2+spacing*1.3 + i * line_spacing - 2, text=line, font='Helvetica', font_size=font_size_txt, color='white')
+        drawable_objects.append(desc_text_id_ds) #store the ID           
+    txt2 = canvas.create_text(150, 600, text="Are you sure?", font='Arial',  font_size = font_size_txt, color='white')    
+    yes = canvas.create_rectangle(340,590,392,630,CLASSES[class_name]["paddle_colour"])
+    no = canvas.create_rectangle(490,590,542,630,CLASSES[class_name]["paddle_colour"])
+    yes_txt = canvas.create_text(350, 600, text="Yes", font='Arial',  font_size = font_size_txt, color='white')
+    no_txt = canvas.create_text(503, 600, text="No", font='Arial',  font_size = font_size_txt, color='white')
+    #canvas.create_text(CANVAS_WIDTH * .4, CANVAS_WIDTH/2, text=f"Welcome, {player['class_name']}!", font='Arial', font_size=20, color='black')
+    drawable_objects.append(class_name_txt)  # Store the ID
+    drawable_objects.append(class_name_txt_ds)  # Store the ID
+    drawable_objects.append(text1)  # Store the ID
+    drawable_objects.append(icon_id)  # Store the ID
+    drawable_objects.append(armor_txt)  # Store the ID
+    drawable_objects.append(armor_txt_ds)  # Store the ID
+    drawable_objects.append(weapon_txt)  # Store the ID
+    drawable_objects.append(trait_txt)  # Store the ID
+    drawable_objects.append(trait_txt_ds1)  # Store the ID
+    drawable_objects.append(trait_txt_ds2)  # Store the ID
+    drawable_objects.append(txt2)  # Store the ID
+    drawable_objects.append(no_txt)  # Store the ID
+    drawable_objects.append(no)  # Store the ID
+    drawable_objects.append(yes_txt)  # Store the ID
+    drawable_objects.append(picture_id)  # Store the ID
+    drawable_objects.append(weapon_txt)  # Store the ID
+    drawable_objects.append(weapon_txt_ds)  # Store the ID
+    drawable_objects.append(yes)  # Store the ID
+    #drawable_objects.append(yes)  # Store the ID
+    time.sleep(.5)
+    
+    while True:
+        click = canvas.get_last_click() #player clicks yes
+        if click is not None:
+            x, y = click
+            left   = canvas.get_left_x(yes)
+            width  = canvas.get_object_width(yes)
+            top    = canvas.get_top_y(yes)
+            height = canvas.get_object_height(yes)
+            #print("DEBUG • yes bbox:", left, width, top, height, " click:", x, y)
+            if (canvas.get_left_x(yes) <= x <= canvas.get_left_x(yes) + canvas.get_object_width(yes) and canvas.get_top_y(yes) <= y <= canvas.get_top_y(yes) + canvas.get_object_height(yes)):
+                for obj_id in drawable_objects:
+                    canvas.delete(obj_id)
+                #print(f"Selected class: {class_name}")   
+                player["class"] = CLASSES[class_name].copy()
+                player["class_name"] = class_name
+                player_hp_graphics(canvas)
+                time.sleep(0.1)
+                AREA_FUNCTIONS[ AREAS[current_area_index] ](canvas)
+            elif (canvas.get_left_x(no) <= x <= canvas.get_left_x(no) + canvas.get_object_width(no)
+      and canvas.get_top_y(no) <= y <= canvas.get_top_y(no) + canvas.get_object_height(no)):
+                # Clear old components only
+                for obj_id in drawable_objects:
+                    canvas.delete(obj_id)
+                character_selection_screen(canvas)
+            
+        time.sleep(0.01)
+
+def player_hp_graphics(canvas):
+    if "class" in player:
+        player_heart = canvas.create_image_with_size(5,CANVAS_HEIGHT-50,50,50,"heart.png")
+        if player['class']['hp'] >= 10:
+            offset = 14
+        else:
+            offset = 0
+        player_hp = canvas.create_text(20-offset,CANVAS_HEIGHT-43,text=f"{player['class']['hp']}",font="Helvetica",font_size=40,color="white")
+        if player["class_name"] == "Knight" and player["class"]["shield"]==True:
+            shield_icon_true = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"shield_block.webp") 
+            shield_value = canvas.create_text(75,CANVAS_HEIGHT-43,text=f"{player['class']['shield_strength']}",font="Helvetica",font_size=40,color="white")
+        if player["class_name"] == "Knight" and player["class"]["shield"]==False:
+            shield_icon_broken = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"shield_broken.webp")
+        if player["class_name"] == "Mage" and player["class"]["mana"] < player['class']['fireball']:
+            mana_charging_icon = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"runes-star-orange.webp") 
+            mana_value = canvas.create_text(75,CANVAS_HEIGHT-43,text=f"{player['class']['mana']}",font="Helvetica",font_size=40,color="white")
+        if player["class_name"] == "Mage" and player["class"]["mana"] >= player['class']['fireball']:
+            mana_charged = canvas.create_image_with_size(60,CANVAS_HEIGHT-50,50,50,"fireball.webp")
+
+def create_background(canvas):
+    canvas.create_image_with_size(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT, "Lost City of Uitar.jpg")
+    black_bar = canvas.create_rectangle(0,CANVAS_HEIGHT-50,CANVAS_WIDTH,CANVAS_HEIGHT,"black")
+    player_hp_graphics(canvas)    
+
+
+def outer_city(canvas):
+    enemy = choose_enemy()
+    drawable_objects=[]
+    dialogue = canvas.create_text(CANVAS_WIDTH*.3,CANVAS_HEIGHT-40,text='"Hey, down here!"',font="Helvetica",font_size=30,color="white")
+    print('You see a disembodied skull lying amongst the ruins\n"Pick me up will ya? Not with the mouse though"')
+    combat_background = canvas.create_image_with_size(0, 0,CANVAS_WIDTH,CANVAS_HEIGHT-50, "Combat background.jpg")
+    terminal_pic = canvas.create_image_with_size(0, 0,CANVAS_WIDTH,CANVAS_HEIGHT-50, "morte.webp")
+    morte_response(game_event=f"The player has selected the {player['class']} class. Their weapon is {player['class']['weapon']}, and their trait is '{player['class']['trait']}' — {player['class']['traitdesc']}. There is a {enemy['name'].lower()} approaching the player.")
+    negative_responses = {"no", "no way", "nah", "nope", "never", "i won’t", "i will not", "not a chance", "forget it"}
+    pick_up = input().strip().lower()
+    if pick_up in negative_responses or any(neg in pick_up for neg in negative_responses):
+        print("The disembodied skull blinks patiently at you. You aren't sure how")
+        canvas.change_text(dialogue,'"Rude."')
+        pick_up = input()
+    canvas.delete(dialogue)
+    print('Terminal: I’m Terminal. That’s my name and my medical status. Efficient, right? Now, what should I call ya this time?"')
+    print("Unable to speak or click, you think your name really hard... ")
+    morte_response(game_event="Terminal greeted the player by saying: 'I’m Terminal. That’s my name and my medical status. Efficient, right? Now, what should I call ya this time?'")
+    player["name"] = input()
+    print(f"As Terminal is about to reply, you see {a_or_an(enemy['name'])} {enemy['name'].lower()} approaching!")
+    dialogue = canvas.create_text(CANVAS_WIDTH*0.25,CANVAS_HEIGHT-40,text="Loading...",font="Helvetica",font_size=30,color="white")
+    response = morte_response(user_input=player["name"])
+    print()
+    canvas.delete(terminal_pic)
+    enemy_pic= image = canvas.create_image_with_size(0,0,CANVAS_WIDTH,CANVAS_HEIGHT,enemy["image"])
+    print()
+    time.sleep(5)
+    print(f'Terminal: "{response}"')
+    previously_encountered(enemy['name'], AREAS[current_area_index]) #Has the player seen these before?
+    time.sleep(5)
+    canvas.change_text(dialogue, f"Click the {enemy['name'].lower()} to defend yourself!")
+    while True:
+        click = canvas.get_last_click()
+        if click is not None:
+            canvas.clear()
+            create_background(canvas)
+            start_pong_battle(player, enemy)    
+    
+def draw_multiline_text(canvas, x, y, text, max_chars_per_line=60, line_spacing=20, font='Helvetica', font_size=20, color='white'):
+    lines = wrap_text(text, max_chars_per_line)
+    text_ids = []
+    for i, line in enumerate(lines):
+        text_id = canvas.create_text(x, y + i * line_spacing, text=line, font=font, font_size=font_size, color=color)
+        text_ids.append(text_id)
+    return text_ids
+
+def game_start(canvas):
+    global deaths
+    encountered_enemies = {}
+    player.clear()
+    canvas.create_rectangle(50,190,650,310,"black")
+    canvas.create_rectangle(50,390,650,550,"black")
+    canvas.create_rectangle(50,190,650,310,"black")
+    canvas.create_rectangle(240,630,450,680,"red")
+    text = "You arrive at the entrance of Tattingmire. The air is thick with ash and memory. Something ancient watches you, and you feel like you've been here before. Once a prosperous hub of commerce and the arts, now... Well, there's a giant skull in the middle."
+    draw_multiline_text(canvas, x=70, y=200, text=text)
+    if deaths == 0:
+        text = "Welcome to Terminal Loop. In this game you are attempting to purge the corruption of Tattingmire. You will choose a class, then battle through the 5 zones of the city until you reach the center, the heart of the corruption. You will primarily use your mouse, but there are some light RPG elements too, so don't ignore Terminal!"
+    else:
+        text = "Welcome back to Terminal Loop. In this game you are still attempting to purge the corruption of Tattingmire. You will choose a class again, then battle through the 5 zones of the city until you reach the center, the heart of the corruption."
+    draw_multiline_text(canvas, x=70, y=400, text=text)
+    canvas.create_text(CANVAS_WIDTH/2-100,CANVAS_HEIGHT-60,"Enter the city...",font="Helvetica",font_size=30,color="white")
+    
+    while True:
+        click = canvas.get_last_click()
+        if click is not None:
+            x, y = click
+            if 240 <= x <= 450 and 630 <= y <= 680:
+                canvas.clear()
+                create_background(canvas)    
+                return
+
+def victory_screen(canvas,player,enemy):
+    global current_area_index
+    current_area_index += 1
+    next_area = AREAS[current_area_index]
+
+    #print(f"Terminal: Nicely done {player['name']}! You really showed that {enemy['name']} who's boss. Now that we're done here, let's move on to the {next_area}.")
+    print(f"Terminal: Nicely done {player['name']}! Sadly the rest of the city aint ready for ya yet but feel free to try one of the other classes.")
+    canvas.clear()
+    AREA_FUNCTIONS[next_area](canvas)
+
+def game_over(canvas,player,enemy):
+    global deaths
+    deaths += 1
+    print(f"{player['name']} died in the {AREAS[current_area_index]} to {a_or_an(enemy['name'])} {enemy['name'].lower()}.")
+    print("Time to try again...")
+    main()
+
+def inner_gate(canvas):
+    print("inner gate")
+    pass
+
+def market_ward(canvas):
+    print("market_ward")
+    pass
+
+def cathedral_row(canvas):
+    print("Cathedral row")
+    pass
+
+def the_heart(canvas,player):
+    print("The Heart")
+    pass
+
+AREA_FUNCTIONS = {
+    "Outer City": outer_city,
+    "Inner Gate": inner_gate,
+    "Market Ward": market_ward,
+    "Cathedral Row": cathedral_row,
+    "The Heart": the_heart,
+}
+
+AREAS = [
+    "Outer City",
+    "Inner Gate",
+    "Market Ward",
+    "Cathedral Row",
+    "The Heart",
+]
+
+current_area_index = 0
+
+def main():
+    global deaths, current_area_index
+    print(AREAS[current_area_index])
+    while True:
+        canvas = Canvas(CANVAS_WIDTH, CANVAS_HEIGHT)
+        create_background(canvas)
+        game_start(canvas)
+        character_selection_screen(canvas)
+        AREA_FUNCTIONS[current_area_index](canvas)
+    #corruption_level()
+    #end()
+    #enemy = choose_enemy() 
+    #start_pong_battle(player, enemy)
+    #print("test")
+    #enemy = choose_enemy() 
+    #start_pong_battle(player, enemy)
+    #print("You win!")
+
+if __name__ == '__main__':
+    main()
+
